@@ -25,7 +25,6 @@ def convertir_duree(duree):
     if 'm' in str(duree): minutes = int(str(duree).split('h')[-1].replace('m', '').strip())
     return heures * 60 + minutes
 
-# Correction FutureWarning pandas : utiliser .loc pour éviter le chained assignment
 df.loc[:, 'duree'] = df['duree'].apply(convertir_duree)
 
 # ── Extraction des heures numériques ─────────────────────────────────
@@ -68,30 +67,29 @@ def obtenir_tranche(heure):
 df['tranche'] = df['heure_depart'].apply(obtenir_tranche)
 
 # ── Chargement ou réentraînement du modèle ───────────────────────────
-# Sur Render, modele.joblib n'existe pas → on réentraîne automatiquement
-# n_estimators=10 et n_jobs=1 pour respecter les 512MB RAM du free tier
 if os.path.exists('modele.joblib'):
     modele = joblib.load('modele.joblib')
 else:
-    # Préparation des features pour l'entraînement
-    X_train = df[['compagnie_enc', 'depart_enc', 'arrivee_enc', 'duree',
-                  'escales_num', 'heure_depart_num', 'heure_arrivee_num',
-                  'mois_voyage', 'jour_semaine']].copy()
-    X_train.columns = ['compagnie', 'depart', 'arrivee', 'duree', 'escales',
-                       'heure_depart', 'heure_arrivee', 'mois_voyage', 'jour_semaine']
-    X_train = X_train.fillna(X_train.mode().iloc[0])
+    donnees_train = df[['compagnie_enc', 'depart_enc', 'arrivee_enc', 'duree',
+                         'escales_num', 'heure_depart_num', 'heure_arrivee_num',
+                         'mois_voyage', 'jour_semaine']].copy()
+    donnees_train.columns = ['compagnie', 'depart', 'arrivee', 'duree', 'escales',
+                              'heure_depart', 'heure_arrivee', 'mois_voyage', 'jour_semaine']
+    # Imputation colonne par colonne (identique au notebook)
+    for col in ['escales', 'heure_depart', 'heure_arrivee', 'mois_voyage', 'jour_semaine']:
+        valeur_mode = donnees_train[col].mode()[0]
+        donnees_train[col] = donnees_train[col].fillna(valeur_mode)
     Y_train = df['prix']
-    # Entraînement léger : 10 arbres, 1 CPU → adapté au free tier Render (512MB)
-    modele = RandomForestRegressor(n_estimators=10, random_state=42, n_jobs=1)
-    modele.fit(X_train, Y_train)
+    modele = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
+    modele.fit(donnees_train, Y_train)
 
 # ── Initialisation de l'application Dash ─────────────────────────────
 app = dash.Dash(__name__)
-server = app.server  # nécessaire pour gunicorn sur Render
+server = app.server
 
 # ── Palette de couleurs ───────────────────────────────────────────────
 COULEURS = {
-    'fond': '#94a3b8', 'surface': '#f8fafc', 'accent': '#2563eb',
+    'fond': "#d4d5d6", 'surface': '#f8fafc', 'accent': '#2563eb',
     'texte': '#0f172a', 'muted': '#1e293b', 'vert': '#16a34a',
     'ambre': '#d97706', 'bordure': '#e2e8f0',
 }
@@ -104,7 +102,6 @@ app.layout = html.Div(
                 style={'color': COULEURS['texte'], 'fontSize': '18px', 'marginBottom': '4px'}),
         html.P("Analyse des prix réels · Modèle Random Forest · R² = 0.72",
                style={'color': COULEURS['muted'], 'fontSize': '12px', 'marginBottom': '16px'}),
-        # ── Filtres ──
         html.Div(
             style={'backgroundColor': COULEURS['surface'], 'padding': '14px', 'borderRadius': '12px', 'marginBottom': '12px', 'display': 'flex', 'gap': '20px'},
             children=[
@@ -122,28 +119,23 @@ app.layout = html.Div(
                 ], style={'flex': 1}),
             ]
         ),
-        # ── KPIs ──
         html.Div(style={'display': 'flex', 'gap': '10px', 'marginBottom': '12px'}, children=[
             html.Div(id='kpi-vols', style={'flex': 1, 'backgroundColor': COULEURS['surface'], 'padding': '14px', 'borderRadius': '12px'}),
             html.Div(id='kpi-reel', style={'flex': 1, 'backgroundColor': COULEURS['surface'], 'padding': '14px', 'borderRadius': '12px'}),
             html.Div(id='kpi-predit', style={'flex': 1, 'backgroundColor': COULEURS['surface'], 'padding': '14px', 'borderRadius': '12px'}),
         ]),
-        # ── Graphiques ligne 1 ──
         html.Div(style={'display': 'flex', 'gap': '10px', 'marginBottom': '10px'}, children=[
             html.Div(dcc.Graph(id='graph-tranche'), style={'flex': 1, 'backgroundColor': COULEURS['surface'], 'borderRadius': '12px', 'padding': '10px'}),
             html.Div(dcc.Graph(id='graph-mois'), style={'flex': 1, 'backgroundColor': COULEURS['surface'], 'borderRadius': '12px', 'padding': '10px'}),
         ]),
-        # ── Graphiques ligne 2 ──
         html.Div(style={'display': 'flex', 'gap': '10px', 'marginBottom': '10px'}, children=[
             html.Div(dcc.Graph(id='graph-compagnie'), style={'flex': 1, 'backgroundColor': COULEURS['surface'], 'borderRadius': '12px', 'padding': '10px'}),
             html.Div(dcc.Graph(id='graph-escales'), style={'flex': 1, 'backgroundColor': COULEURS['surface'], 'borderRadius': '12px', 'padding': '10px'}),
         ]),
-        # ── Graphique destinations ──
         html.Div(dcc.Graph(id='graph-destinations'), style={'backgroundColor': COULEURS['surface'], 'borderRadius': '12px', 'padding': '10px'}),
     ]
 )
 
-# ── Callback pour les KPIs ────────────────────────────────────────────
 @app.callback(
     Output('kpi-vols', 'children'), Output('kpi-reel', 'children'), Output('kpi-predit', 'children'),
     Input('filtre-mois', 'value'), Input('filtre-compagnie', 'value'), Input('filtre-tranche', 'value'),
@@ -156,8 +148,10 @@ def mettre_a_jour_kpis(mois, compagnie, tranche):
     nb_vols = len(dff)
     prix_reel = round(dff['prix'].mean()) if nb_vols > 0 else 0
     if nb_vols > 0:
-        dff_pred = dff[['compagnie_enc', 'depart_enc', 'arrivee_enc', 'duree', 'escales_num', 'heure_depart_num', 'heure_arrivee_num', 'mois_voyage', 'jour_semaine']].copy()
-        dff_pred.columns = ['compagnie', 'depart', 'arrivee', 'duree', 'escales', 'heure_depart', 'heure_arrivee', 'mois_voyage', 'jour_semaine']
+        dff_pred = dff[['compagnie_enc', 'depart_enc', 'arrivee_enc', 'duree', 'escales_num',
+                         'heure_depart_num', 'heure_arrivee_num', 'mois_voyage', 'jour_semaine']].copy()
+        dff_pred.columns = ['compagnie', 'depart', 'arrivee', 'duree', 'escales',
+                             'heure_depart', 'heure_arrivee', 'mois_voyage', 'jour_semaine']
         dff_pred = dff_pred.fillna(dff_pred.mode().iloc[0])
         prix_predit = round(modele.predict(dff_pred).mean())
     else:
@@ -169,7 +163,6 @@ def mettre_a_jour_kpis(mois, compagnie, tranche):
     kpi_predit = html.Div([html.Div("Prix prédit moyen", style=style_lbl), html.Div(f"{prix_predit:,} ₹".replace(',', ' '), style={'fontSize': '22px', 'fontWeight': '700', 'color': COULEURS['ambre'], 'marginTop': '5px'}), html.Div("estimé par le modèle", style=style_sub)])
     return kpi_vols, kpi_reel, kpi_predit
 
-# ── Callback pour les 5 graphiques ───────────────────────────────────
 @app.callback(
     Output('graph-tranche', 'figure'), Output('graph-mois', 'figure'), Output('graph-compagnie', 'figure'),
     Output('graph-escales', 'figure'), Output('graph-destinations', 'figure'),
@@ -181,35 +174,32 @@ def mettre_a_jour_graphiques(mois, compagnie, tranche):
     if compagnie != 'Toutes': dff = dff[dff['compagnie'] == compagnie]
     if tranche != 'Tous': dff = dff[dff['tranche'] == tranche]
 
-    # Fonction pour calculer le prix prédit moyen d'un sous-ensemble
     def prix_predit_moyen(subset):
         if len(subset) == 0: return 0
-        pred_data = subset[['compagnie_enc', 'depart_enc', 'arrivee_enc', 'duree', 'escales_num', 'heure_depart_num', 'heure_arrivee_num', 'mois_voyage', 'jour_semaine']].copy()
-        pred_data.columns = ['compagnie', 'depart', 'arrivee', 'duree', 'escales', 'heure_depart', 'heure_arrivee', 'mois_voyage', 'jour_semaine']
+        pred_data = subset[['compagnie_enc', 'depart_enc', 'arrivee_enc', 'duree', 'escales_num',
+                             'heure_depart_num', 'heure_arrivee_num', 'mois_voyage', 'jour_semaine']].copy()
+        pred_data.columns = ['compagnie', 'depart', 'arrivee', 'duree', 'escales',
+                              'heure_depart', 'heure_arrivee', 'mois_voyage', 'jour_semaine']
         pred_data = pred_data.fillna(pred_data.mode().iloc[0])
         return round(modele.predict(pred_data).mean())
 
-    # 1. DONUT — tranches horaires
     tranches = ['Nuit', 'Matin', 'Après-midi', 'Soir']
     prix_tranches = [dff[dff['tranche'] == t]['prix'].mean() for t in tranches]
     fig_tranche = go.Figure(go.Pie(labels=tranches, values=[round(p) if not np.isnan(p) else 0 for p in prix_tranches], hole=0.5, marker_colors=['#1e40af', '#2563eb', '#60a5fa', '#93c5fd']))
     fig_tranche.update_layout(title='À quel moment de la journée voyager moins cher ?', title_font_size=12, margin=dict(t=40, b=10, l=10, r=10), paper_bgcolor='#f8fafc', plot_bgcolor='#f8fafc')
 
-    # 2. BARRES VERTICALES — mois (violet)
     mois_ordre = ['Mars', 'Avril', 'Mai', 'Juin']
     prix_mois = [dff[dff['mois_nom'] == m]['prix'].mean() for m in mois_ordre]
     couleurs_mois = ['#7c3aed' if mois == 'Tous' or m == mois else '#ddd6fe' for m in mois_ordre]
     fig_mois = go.Figure(go.Bar(x=mois_ordre, y=[round(p) if not np.isnan(p) else 0 for p in prix_mois], marker_color=couleurs_mois, text=[f"{round(p):,} ₹".replace(',', ' ') if not np.isnan(p) else '' for p in prix_mois], textposition='outside'))
     fig_mois.update_layout(title='Dans quel mois voyager moins cher ?', title_font_size=12, margin=dict(t=40, b=10, l=10, r=10), yaxis_title='Prix moyen (₹)', paper_bgcolor='#f8fafc', plot_bgcolor='#f8fafc', yaxis=dict(gridcolor='#f1f5f9'))
 
-    # 3. BARRES HORIZONTALES — compagnies (vert)
     compagnies = sorted(dff['compagnie'].unique())
     prix_comp = [dff[dff['compagnie'] == c]['prix'].mean() for c in compagnies]
     couleurs_comp = ['#059669' if compagnie == 'Toutes' or c == compagnie else '#6ee7b7' for c in compagnies]
     fig_comp = go.Figure(go.Bar(x=[round(p) if not np.isnan(p) else 0 for p in prix_comp], y=compagnies, orientation='h', marker_color=couleurs_comp, text=[f"{round(p):,} ₹".replace(',', ' ') if not np.isnan(p) else '' for p in prix_comp], textposition='outside'))
     fig_comp.update_layout(title='Quelle compagnie choisir ?', title_font_size=12, margin=dict(t=40, b=10, l=10, r=10), xaxis_title='Prix moyen (₹)', paper_bgcolor='#f8fafc', plot_bgcolor='#f8fafc', xaxis=dict(gridcolor='#f1f5f9'))
 
-    # 4. AREA CHART — escales (bleu + orange)
     escales_vals = [0, 1, 2, 3]
     escales_labels = ['0 escale', '1 escale', '2 escales', '3 escales']
     prix_esc_reel = [dff[dff['escales_num'] == e]['prix'].mean() for e in escales_vals]
@@ -219,7 +209,6 @@ def mettre_a_jour_graphiques(mois, compagnie, tranche):
     fig_esc.add_trace(go.Scatter(x=escales_labels, y=prix_esc_pred, mode='lines+markers', fill='tozeroy', name='Prix prédits', line=dict(color='#d97706', width=2, dash='dash'), fillcolor='rgba(217,119,6,0.07)'))
     fig_esc.update_layout(title='Les escales font-elles augmenter le prix ?', title_font_size=12, margin=dict(t=40, b=10, l=10, r=10), yaxis_title='Prix moyen (₹)', paper_bgcolor='#f8fafc', plot_bgcolor='#f8fafc', yaxis=dict(gridcolor='#f1f5f9'), legend=dict(font=dict(size=10)))
 
-    # 5. SCATTER — destinations (bleu + orange)
     destinations = sorted(dff['arrivee'].dropna().unique())
     scatter_x, scatter_y_reel, scatter_y_pred = [], [], []
     for dest in destinations:
