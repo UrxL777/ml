@@ -25,7 +25,8 @@ def convertir_duree(duree):
     if 'm' in str(duree): minutes = int(str(duree).split('h')[-1].replace('m', '').strip())
     return heures * 60 + minutes
 
-df['duree'] = df['duree'].apply(convertir_duree)
+# Correction FutureWarning pandas : utiliser .loc pour éviter le chained assignment
+df.loc[:, 'duree'] = df['duree'].apply(convertir_duree)
 
 # ── Extraction des heures numériques ─────────────────────────────────
 df['heure_depart_num'] = pd.to_datetime(df['heure_depart'], format='%H:%M').dt.hour
@@ -68,6 +69,7 @@ df['tranche'] = df['heure_depart'].apply(obtenir_tranche)
 
 # ── Chargement ou réentraînement du modèle ───────────────────────────
 # Sur Render, modele.joblib n'existe pas → on réentraîne automatiquement
+# n_estimators=10 et n_jobs=1 pour respecter les 512MB RAM du free tier
 if os.path.exists('modele.joblib'):
     modele = joblib.load('modele.joblib')
 else:
@@ -79,8 +81,8 @@ else:
                        'heure_depart', 'heure_arrivee', 'mois_voyage', 'jour_semaine']
     X_train = X_train.fillna(X_train.mode().iloc[0])
     Y_train = df['prix']
-    # Entraînement du modèle RandomForest
-    modele = RandomForestRegressor(n_estimators=100, random_state=42)
+    # Entraînement léger : 10 arbres, 1 CPU → adapté au free tier Render (512MB)
+    modele = RandomForestRegressor(n_estimators=10, random_state=42, n_jobs=1)
     modele.fit(X_train, Y_train)
 
 # ── Initialisation de l'application Dash ─────────────────────────────
